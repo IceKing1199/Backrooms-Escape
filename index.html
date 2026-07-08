@@ -643,7 +643,9 @@ const CFG = {
     farDist: 38, farTime: 11, relocMin: 15, relocMax: 25,
     dreadR: 30,
     // слух: базовая чувствительность + добавка «на взводе»; упреждение бега; удержание погони по слуху; спад настороженности
-    hearBase: 2.3, hearAlert: 0.6, predictLead: 5.5, chaseHoldHear: 0.15, alertDecay: 35
+    hearBase: 2.3, hearAlert: 0.6, predictLead: 5.5, chaseHoldHear: 0.15, alertDecay: 35,
+    // финальная погоня (дверь перепрятана): множитель скорости — ОНО не отпустит
+    finalMul: 1.3
   },
   sanity: {
     darkDist: 7,      // дальше этого от лампы (и без фонаря) — темнота
@@ -726,7 +728,8 @@ const game = {
   blackF: 1, blackT: 0, blackNext: 14,
   dieT: 0,
   shake: 0, redFx: 0,
-  msgTimer: null
+  msgTimer: null,
+  finalChase: false   // код введён, дверь перепрятана — ОНО охотится без пощады
 };
 
 /* ============================================================
@@ -2618,58 +2621,73 @@ function buildLevel(lv) {
 
   // --- Выход: запечатанная дверь (доски + провода + кодовый замок) ---
   if (lv.exitCell) {
-    const Rd = mulberry32((lv.seed ^ 0xD00D) >>> 0);
-    const d = lv.exitDir;
-    const cx = cellC(lv.exitCell[0]), cz = cellC(lv.exitCell[1]);
-    const px = cx + d[0] * (CELL / 2 - 0.04);
-    const pz = cz + d[1] * (CELL / 2 - 0.04);
-    const doorYaw = Math.atan2(-d[0], -d[1]);   // "лицом" в комнату, как у исходного проёма
-    const spanYaw = (d[0] !== 0) ? Math.PI / 2 : 0; // длинная ось досок/проводов вдоль ширины проёма
+    lv.doorGroup = buildExitDoor(lv, lv.exitCell, lv.exitDir, false);
+    g.add(lv.doorGroup);
+  }
 
-    const doorMat = new THREE.MeshStandardMaterial({ color: 0x1c1712, roughness: 0.85, metalness: 0.05 });
-    lv._mats.push(doorMat);
-    lv.doorPlaneMat = doorMat;
-    const doorPlane = new THREE.Mesh(geo(new THREE.PlaneGeometry(1.4, 2.6)), doorMat);
-    doorPlane.position.set(px, 1.32, pz);
-    doorPlane.rotation.y = doorYaw;
-    g.add(doorPlane);
+  scene.add(g);
+}
 
-    const frameMat = matStd({ color: 0x241d12, roughness: 0.8, metalness: 0 });
-    const sideGeo = geo(new THREE.BoxGeometry(0.14, 2.8, 0.14));
-    const perpX = Math.abs(d[1]), perpZ = Math.abs(d[0]);
-    const s1 = new THREE.Mesh(sideGeo, frameMat);
-    s1.position.set(px + perpX * 0.78, 1.4, pz + perpZ * 0.78);
-    g.add(s1);
-    const s2 = new THREE.Mesh(sideGeo, frameMat);
-    s2.position.set(px - perpX * 0.78, 1.4, pz - perpZ * 0.78);
-    g.add(s2);
-    const top = new THREE.Mesh(geo(new THREE.BoxGeometry(1.72, 0.14, 0.14)), frameMat);
-    top.position.set(px, 2.74, pz);
-    if (d[0] !== 0) top.rotation.y = Math.PI / 2;
-    g.add(top);
-    lv.exitPos = new THREE.Vector3(px - d[0] * 0.55, 0, pz - d[1] * 0.55);
+// Строит дверь выхода в указанной клетке. unlocked=true — сразу открытая
+// дверь без досок/проводов (зелёный светодиод) — используется при перепрятывании
+// двери после ввода кода (см. relocateExitDoor).
+function buildExitDoor(lv, cell, dir, unlocked) {
+  const dg = new THREE.Group();
+  const _geos = [], _mats = [];
+  const geo = (gm) => { _geos.push(gm); return gm; };
+  const matStd = (opts) => { const m = new THREE.MeshStandardMaterial(opts); _mats.push(m); return m; };
+  const Rd = mulberry32((lv.seed ^ 0xD00D ^ (cell[0] * 131 + cell[1] * 977)) >>> 0);
+  const d = dir;
+  const cx = cellC(cell[0]), cz = cellC(cell[1]);
+  const px = cx + d[0] * (CELL / 2 - 0.04);
+  const pz = cz + d[1] * (CELL / 2 - 0.04);
+  const doorYaw = Math.atan2(-d[0], -d[1]);   // "лицом" в комнату, как у исходного проёма
+  const spanYaw = (d[0] !== 0) ? Math.PI / 2 : 0; // длинная ось досок/проводов вдоль ширины проёма
 
-    // Доски, наспех прибитые поверх двери
+  const doorMat = matStd({ color: unlocked ? 0x000000 : 0x1c1712, roughness: 0.85, metalness: 0.05 });
+  lv.doorPlaneMat = doorMat;
+  const doorPlane = new THREE.Mesh(geo(new THREE.PlaneGeometry(1.4, 2.6)), doorMat);
+  doorPlane.position.set(px, 1.32, pz);
+  doorPlane.rotation.y = doorYaw;
+  dg.add(doorPlane);
+
+  const frameMat = matStd({ color: 0x241d12, roughness: 0.8, metalness: 0 });
+  const sideGeo = geo(new THREE.BoxGeometry(0.14, 2.8, 0.14));
+  const perpX = Math.abs(d[1]), perpZ = Math.abs(d[0]);
+  const s1 = new THREE.Mesh(sideGeo, frameMat);
+  s1.position.set(px + perpX * 0.78, 1.4, pz + perpZ * 0.78);
+  dg.add(s1);
+  const s2 = new THREE.Mesh(sideGeo, frameMat);
+  s2.position.set(px - perpX * 0.78, 1.4, pz - perpZ * 0.78);
+  dg.add(s2);
+  const top = new THREE.Mesh(geo(new THREE.BoxGeometry(1.72, 0.14, 0.14)), frameMat);
+  top.position.set(px, 2.74, pz);
+  if (d[0] !== 0) top.rotation.y = Math.PI / 2;
+  dg.add(top);
+  lv.exitPos = new THREE.Vector3(px - d[0] * 0.55, 0, pz - d[1] * 0.55);
+
+  // Доски, наспех прибитые поверх двери (перепрятанная дверь уже открыта — без досок)
+  lv.doorBoardMeshes = [];
+  if (!unlocked) {
     const boardMat = matStd({ color: 0x4a3420, roughness: 0.85, metalness: 0 });
     const boardGeo = geo(new THREE.BoxGeometry(1.66, 0.22, 0.05));
-    lv.doorBoardMeshes = [];
     const boardYs = [2.35, 1.75, 1.05, 0.4];
     for (let i = 0; i < boardYs.length; i++) {
       const b = new THREE.Mesh(boardGeo, boardMat);
       b.position.set(px - d[0] * 0.1, boardYs[i], pz - d[1] * 0.1);
       b.rotation.y = spanYaw;
       b.rotation.z = (Rd() - 0.5) * 0.16;
-      g.add(b);
+      dg.add(b);
       lv.doorBoardMeshes.push(b);
     }
+  }
 
-    // Провода, натянутые поверх — питают кодовый замок
-    const wireMatBlk = new THREE.MeshStandardMaterial({ color: 0x131313, roughness: 0.6, metalness: 0.2 });
-    lv._mats.push(wireMatBlk);
-    const wireMatRed = new THREE.MeshStandardMaterial({ color: 0x8a1c14, roughness: 0.6, metalness: 0.2 });
-    lv._mats.push(wireMatRed);
+  // Провода, натянутые поверх — питают кодовый замок (перепрятанная дверь — без проводов)
+  lv.doorWireMeshes = [];
+  if (!unlocked) {
+    const wireMatBlk = matStd({ color: 0x131313, roughness: 0.6, metalness: 0.2 });
+    const wireMatRed = matStd({ color: 0x8a1c14, roughness: 0.6, metalness: 0.2 });
     const wireGeo = geo(new THREE.BoxGeometry(1.55, 0.028, 0.028));
-    lv.doorWireMeshes = [];
     const wireCfg = [[2.05, 0.14, wireMatBlk], [1.5, -0.1, wireMatBlk], [0.85, 0.1, wireMatRed], [0.3, -0.12, wireMatBlk]];
     for (let i = 0; i < wireCfg.length; i++) {
       const wy = wireCfg[i][0], tilt = wireCfg[i][1], wm = wireCfg[i][2];
@@ -2677,36 +2695,72 @@ function buildLevel(lv) {
       w.position.set(px - d[0] * 0.16, wy, pz - d[1] * 0.16);
       w.rotation.y = spanYaw;
       w.rotation.z = tilt;
-      g.add(w);
+      dg.add(w);
       lv.doorWireMeshes.push(w);
     }
-
-    // Кодовая панель, привинченная к косяку
-    const padBody = new THREE.Group();
-    const padBoxMat = matStd({ color: 0x28282b, roughness: 0.5, metalness: 0.4 });
-    const padBox = new THREE.Mesh(geo(new THREE.BoxGeometry(0.16, 0.22, 0.05)), padBoxMat);
-    padBody.add(padBox);
-    const btnMat = matStd({ color: 0x111113, roughness: 0.4, metalness: 0.3 });
-    const btnGeo = geo(new THREE.BoxGeometry(0.028, 0.028, 0.02));
-    for (let r2 = 0; r2 < 3; r2++)
-      for (let c2 = 0; c2 < 3; c2++) {
-        const btn = new THREE.Mesh(btnGeo, btnMat);
-        btn.position.set(-0.045 + c2 * 0.045, 0.065 - r2 * 0.045, 0.036);
-        padBody.add(btn);
-      }
-    const ledMat = new THREE.MeshBasicMaterial({ color: 0xff2a1e });
-    ledMat.toneMapped = false;
-    lv._mats.push(ledMat);
-    const led = new THREE.Mesh(geo(new THREE.PlaneGeometry(0.05, 0.025)), ledMat);
-    led.position.set(0, 0.1, 0.036);
-    padBody.add(led);
-    lv.doorLed = ledMat;
-    padBody.position.set(px + perpX * 0.72, 1.35, pz + perpZ * 0.72);
-    padBody.rotation.y = doorYaw;
-    g.add(padBody);
   }
 
-  scene.add(g);
+  // Кодовая панель, привинченная к косяку
+  const padBody = new THREE.Group();
+  const padBoxMat = matStd({ color: 0x28282b, roughness: 0.5, metalness: 0.4 });
+  const padBox = new THREE.Mesh(geo(new THREE.BoxGeometry(0.16, 0.22, 0.05)), padBoxMat);
+  padBody.add(padBox);
+  const btnMat = matStd({ color: 0x111113, roughness: 0.4, metalness: 0.3 });
+  const btnGeo = geo(new THREE.BoxGeometry(0.028, 0.028, 0.02));
+  for (let r2 = 0; r2 < 3; r2++)
+    for (let c2 = 0; c2 < 3; c2++) {
+      const btn = new THREE.Mesh(btnGeo, btnMat);
+      btn.position.set(-0.045 + c2 * 0.045, 0.065 - r2 * 0.045, 0.036);
+      padBody.add(btn);
+    }
+  const ledMat = new THREE.MeshBasicMaterial({ color: unlocked ? 0x2aff5a : 0xff2a1e });
+  ledMat.toneMapped = false;
+  _mats.push(ledMat);
+  const led = new THREE.Mesh(geo(new THREE.PlaneGeometry(0.05, 0.025)), ledMat);
+  led.position.set(0, 0.1, 0.036);
+  padBody.add(led);
+  lv.doorLed = ledMat;
+  padBody.position.set(px + perpX * 0.72, 1.35, pz + perpZ * 0.72);
+  padBody.rotation.y = doorYaw;
+  dg.add(padBody);
+
+  lv._doorGeos = _geos;
+  lv._doorMats = _mats;
+  return dg;
+}
+
+// Перепрятывает дверь выхода после ввода кода: дверь исчезает и появляется
+// в дальней точке лабиринта, ОНО переходит в режим безостановочной охоты.
+function relocateExitDoor() {
+  const lv = level;
+  if (lv.doorGroup) {
+    lv.group.remove(lv.doorGroup);
+    for (let i = 0; i < lv._doorGeos.length; i++) lv._doorGeos[i].dispose();
+    for (let i = 0; i < lv._doorMats.length; i++) lv._doorMats[i].dispose();
+  }
+
+  const W = lv.W;
+  bfsDist(lv, cellOf(P.pos.x), cellOf(P.pos.z), BFSP.dist);
+  let newCell = null, bestD = -1;
+  for (let i = 0; i < lv.floors.length; i++) {
+    const f = lv.floors[i];
+    if (lv.noMon[f[1] * W + f[0]]) continue;
+    if (f === lv.exitCell) continue;
+    const d = BFSP.dist[f[1] * W + f[0]];
+    if (d > bestD && wallNeighborDir(lv, f[0], f[1])) { bestD = d; newCell = f; }
+  }
+  if (!newCell) newCell = lv.exitCell;
+
+  lv.exitCell = newCell;
+  lv.exitDir = wallNeighborDir(lv, newCell[0], newCell[1]);
+  lv.doorGroup = buildExitDoor(lv, lv.exitCell, lv.exitDir, true);
+  lv.group.add(lv.doorGroup);
+
+  game.finalChase = true;
+  game.shake = Math.max(game.shake, 0.5);
+  game.redFx = Math.max(game.redFx, 0.6);
+  A.doorSnd();
+  showMsg('ДВЕРЬ ИСЧЕЗЛА! ОНО ИДЁТ — БЕГИ!', 2.4);
 }
 
 function disposeLevel(lv) {
@@ -2715,6 +2769,8 @@ function disposeLevel(lv) {
   for (let i = 0; i < lv._geos.length; i++) lv._geos[i].dispose();
   for (let i = 0; i < lv._mats.length; i++) lv._mats[i].dispose();
   for (let i = 0; i < lv._texs.length; i++) lv._texs[i].dispose();
+  if (lv._doorGeos) for (let i = 0; i < lv._doorGeos.length; i++) lv._doorGeos[i].dispose();
+  if (lv._doorMats) for (let i = 0; i < lv._doorMats.length; i++) lv._doorMats[i].dispose();
   lv.group = null;
 }
 
@@ -3417,6 +3473,7 @@ function initCompass() {
   COMPASS.pivBar  = makeArrow();
   COMPASS.pivCut  = makeArrow();
   COMPASS.pivCode = makeArrow();
+  COMPASS.arrowMat = arrowMat;
 
   camera.add(grp);
   COMPASS.group = grp;
@@ -3450,6 +3507,16 @@ function compassUpdate(dt) {
 
   if (level.exitPos) aim(COMPASS.pivDoor, level.exitPos.x, level.exitPos.z);
   else COMPASS.pivDoor.visible = false;
+
+  // финальная погоня: стрелка пульсирует тревожным красным — беги к двери
+  if (game.finalChase) {
+    const p = 0.5 + 0.5 * Math.sin(game.runTime * 9);
+    COMPASS.arrowMat.color.setRGB(0.91, 0.85 - p * 0.75, 0.54 - p * 0.54);
+    COMPASS.arrowMat.emissive.setRGB(0.35 * p, 0, 0);
+  } else {
+    COMPASS.arrowMat.color.setHex(0xe8d98a);
+    COMPASS.arrowMat.emissive.setHex(0x59481a);
+  }
 
   const pb = nearestUnclaimed('crowbar');
   if (pb) aim(COMPASS.pivBar, pb.x, pb.z); else COMPASS.pivBar.visible = false;
@@ -3522,7 +3589,8 @@ function scanInteract() {
     } else if (best.type === 'exit') {
       if (DOOR.boardsOn)      txt = KIT.crowbar ? 'Сорвать доски ломом' : 'Заколочено досками — нужен лом';
       else if (DOOR.wiresOn) txt = KIT.cutters ? 'Перерезать провода кусачками' : 'Провода под напряжением — нужны кусачки';
-      else                    txt = KIT.code ? 'Ввести найденный код' : 'Кодовый замок — нужен код';
+      else if (DOOR.locked)   txt = KIT.code ? 'Ввести найденный код' : 'Кодовый замок — нужен код';
+      else                    txt = 'БЕЖАТЬ В ДВЕРЬ!';
     }
   }
   setPrompt(txt);
@@ -3573,10 +3641,9 @@ function doInteract() {
     } else if (DOOR.locked) {
       if (!KIT.code) { A.clickUI(); showMsg('НУЖЕН КОД', 1.2); return; }
       DOOR.locked = false;
-      level.doorLed.color.setHex(0x2aff5a);
-      level.doorPlaneMat.color.setHex(0x000000);
       A.padBeep(true);
-      showMsg('КОД ПОДОШЁЛ: ' + level.doorCode, 1.6);
+      relocateExitDoor();
+    } else {
       winGame();
     }
   }
@@ -3974,6 +4041,22 @@ function monsterUpdate(dt) {
   const dist = Math.sqrt(dx * dx + dz * dz);
   M.distP = dist;
 
+  /* --- финальная погоня: дверь перепрятана, ОНО охотится без пощады --- */
+  if (game.finalChase) {
+    if (M.state !== 'chase') {
+      M.state = 'chase';
+      M.chaseTime = C.accelTime;   // сразу на максимальной скорости
+      M.alert = 1;
+      A.alertBark();
+      A.growl(0.9, 1.15);
+      game.shake = Math.max(game.shake, 0.35);
+    }
+    M.lastKnown.copy(P.pos);       // безупречное чутьё — не теряет след
+    captureLead();
+    M.hasLK = true;
+    M.loseT = 0;
+  }
+
   /* --- восприятие: слух (по коридорам) + зрение --- */
   soundFieldUpdate(dt);
   const los = dist < 42 && losGrid(level, M.pos.x, M.pos.z, P.pos.x, P.pos.z);
@@ -4040,7 +4123,8 @@ function monsterUpdate(dt) {
   /* --- поведение --- */
   if (M.state === 'chase') {
     M.chaseTime += dt;
-    const spd = Math.min(C.chaseMax, C.chaseBase + (C.chaseMax - C.chaseBase) * (M.chaseTime / C.accelTime)) * depthMul;
+    let spd = Math.min(C.chaseMax, C.chaseBase + (C.chaseMax - C.chaseBase) * (M.chaseTime / C.accelTime)) * depthMul;
+    if (game.finalChase) spd *= C.finalMul;
     if (see) {
       M.path.length = 0;
       moveToward(P.pos.x, P.pos.z, dt, spd, 7);
@@ -4317,6 +4401,7 @@ function startRun(seed, depth, keepStats) {
   }
   KIT.crowbar = false; KIT.cutters = false; KIT.code = false;
   DOOR.boardsOn = true; DOOR.wiresOn = true; DOOR.locked = true;
+  game.finalChase = false;
   hotbarRender();
   kitRender();
   hudEls.blackout.style.opacity = '0';
